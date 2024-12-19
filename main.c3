@@ -31,6 +31,7 @@ enum TokenKind {
         PARENTESIS_OPEN,
         PARENTESIS_CLOSE,
         EQUAL,
+        COMA,
 }
 
 union TokenValue {
@@ -104,6 +105,7 @@ fn TokenList lex(String expr) {
                                 lst.push(tok);
                                 continue;
                         }
+                        if(!expr[i].is_space()) i--;
                         Token tok = Token {
                                 .kind = TokenKind.IDENTIFIER,
                                 .as = TokenValue {
@@ -176,9 +178,23 @@ fn TokenList lex(String expr) {
                         lst.push(tok);
                         continue;
                 }
+                if(expr[i] == ',') {
+                        Token tok = Token {
+                                .kind = TokenKind.COMA,
+                        };
+                        lst.push(tok);
+                        continue;
+                }
                 unreachable("Unable to lex expression");
         }
         return lst;
+}
+
+def NodeList = List(<Node*>);
+
+struct NodeFunction {
+        String name;
+        NodeList params;
 }
 
 struct NodeBinop {
@@ -191,6 +207,7 @@ union NodeAs {
         Node* prio;
         String ident;
         NodeBinop binop;
+        NodeFunction func;
 }
 
 enum NodeKind {
@@ -205,6 +222,7 @@ enum NodeKind {
         PRIO,
         IDENTIFIER,
         ASSIGN,
+        FUNCTION,
 }
 
 struct Node {
@@ -295,7 +313,7 @@ fn Node* TokenList.parseLv5Expr(&self, Allocator alloc) {
         Token curr = self.first()!!;
         if(curr.kind == TokenKind.SUB) {
                 Token op = self.pop_first()!!;
-                Node* right = self.parseLvMaxExpr(alloc);
+                Node* right = self.parseLv5Expr(alloc);
                 return exportNodeBinop(alloc, op, nodeNumber(alloc, 0), right);
         } else if(curr.kind == TokenKind.PARENTESIS_OPEN) {
                 Token op = self.pop_first()!!;
@@ -304,6 +322,34 @@ fn Node* TokenList.parseLv5Expr(&self, Allocator alloc) {
                 assert(curr.kind == TokenKind.PARENTESIS_CLOSE, "unclosed parenthesis");
                 self.pop_first()!!;
                 return nodePrio(alloc, right);
+        } else if(curr.kind == TokenKind.IDENTIFIER) {
+                Token name = self.pop_first()!!;
+                Token! paren = self.first();
+                if(catch paren) {
+                        self.push_front(name);
+                        return self.parseLvMaxExpr(alloc);
+                }
+                if(paren.kind != TokenKind.PARENTESIS_OPEN) {
+                        self.push_front(name);
+                        return self.parseLvMaxExpr(alloc);
+                }
+                self.pop_first()!!;
+                NodeList l;
+                l.new_init(2, alloc);
+                curr = self.first()!!; 
+                while(curr.kind != TokenKind.PARENTESIS_CLOSE) {
+                        Node* tmp = self.parseLv1Expr(alloc);
+                        l.push(tmp);
+                        Token coma = self.first()!!;
+                        assert(coma.kind == TokenKind.COMA || coma.kind == TokenKind.PARENTESIS_CLOSE, "function parameters must be separated by comas");
+                        if(coma.kind == TokenKind.COMA) self.pop_first()!!;
+                        curr = self.first()!!;
+                }
+                self.pop_first()!!;
+                NodeFunction n;
+                n.name = name.as.ident;
+                n.params = l;
+                return nodeFunc(alloc, n);
         } else {
                 return self.parseLvMaxExpr(alloc);
         }
@@ -363,6 +409,13 @@ fn Node* nodeFactorial(Allocator alloc, Node* expr) {
         return ret;
 }
 
+fn Node* nodeFunc(Allocator alloc, NodeFunction params) {
+        Node* ret = alloc.acquire(Node.sizeof, AllocInitType.ZERO)!!;
+        ret.as.func = params;
+        ret.kind = NodeKind.FUNCTION;
+        return ret;
+}
+
 fn Node* nodeBinop(Allocator alloc, NodeKind kind, Node* lhs, Node* rhs) {
         Node* ret = alloc.acquire(Node.sizeof, AllocInitType.ZERO)!!;
         ret.as.binop.lhs = lhs;
@@ -378,7 +431,30 @@ macro Node* nodeDiv(Allocator alloc, Node* lhs, Node* rhs) => nodeBinop(alloc, N
 macro Node* nodePow(Allocator alloc, Node* lhs, Node* rhs) => nodeBinop(alloc, NodeKind.POW, lhs, rhs);
 macro Node* nodeAssign(Allocator alloc, Node* lhs, Node* rhs) => nodeBinop(alloc, NodeKind.ASSIGN, lhs, rhs);
 
-fn Node *Node.eval(&tree, VarMap *vars, Allocator alloc) {
+fn Node* NodeFunction.eval(&func, VarMap *vars, Allocator alloc) {
+        if(func.name == "sqrt") {
+                if(func.params.len() != 1) {
+                        io::printn("[RUNTIME ERROR] => square root function should have only one parameter");
+                        return null;
+                }
+                Node* val = func.params[0].eval(vars, alloc);
+                if(val == null || val.kind != NodeKind.NUMBER) return null;
+                double num = val.as.number;
+                if(num < 0) {
+                        io::printn("[RUNTIME ERROR] => square root of a negative nuber is not defined");
+                        return null;
+                }
+                if(num == 0) {
+                        io::printn("[RUNTIME ERROR] => square root of zero is not defined");
+                        return null;
+                }
+                return nodeNumber(alloc, math::sqrt(num));
+        }
+        io::printfn("[RUNTIME WARNING] => unable to find function %s", func.name);
+        return null;
+}
+
+fn Node* Node.eval(&tree, VarMap *vars, Allocator alloc) {
         switch(tree.kind) {
                 case NodeKind.NUMBER:
                         return tree;
@@ -431,6 +507,8 @@ fn Node *Node.eval(&tree, VarMap *vars, Allocator alloc) {
                         return nodeNumber(alloc, math::tgamma(val.as.number + 1));
                 case NodeKind.PRIO:
                         return tree.as.prio.eval(vars, alloc);
+                case NodeKind.FUNCTION:
+                        return tree.as.func.eval(vars, alloc);
                 default:
                         unreachable("eval");
         }
@@ -460,6 +538,8 @@ fn void Token.print(&t) {
                         io::printn("FACTORIAL");
                 case TokenKind.EQUAL:
                         io::printn("EQUAL");
+                case TokenKind.COMA:
+                        io::printn("COMA");
                 default:
                         unreachable("Token.print");
         }
@@ -511,6 +591,13 @@ fn void Node.print(&self) {
                         io::print(")");
                 case NodeKind.PRIO:
                         self.as.prio.print();
+                case NodeKind.FUNCTION:
+                        io::printf("%s(", self.as.func.name);
+                        foreach(i, p : self.as.func.params) {
+                                p.print();
+                                if(i < self.as.func.params.len() - 1) io::print(", ");
+                        }
+                        io::print(")");
                 default:
                         unreachable("Node.print");
         }
