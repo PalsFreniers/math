@@ -618,7 +618,7 @@ fn int execOne(String s, VarMap *vars) {
         io::printn("");
         Node* res = expr.eval(vars, &alloc);
         if(res == null || res.kind != NodeKind.NUMBER) {
-                io::eprintn("error: not a number");
+                io::eprintn("error: unexpected");
                 return 1;
         }
         io::printfn("result: %f", res.as.number);
