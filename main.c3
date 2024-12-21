@@ -44,16 +44,6 @@ struct Token {
         TokenValue as;
 }
 
-struct Parser {
-        bool in_digit;
-        bool in_fract;
-}
-
-macro void Parser.reset(&self) {
-        self.in_fract = false;
-        self.in_digit = false;
-}
-
 fn TokenList lex(String expr) {
         TokenList lst;
         lst.new_init();
@@ -94,7 +84,8 @@ fn TokenList lex(String expr) {
                                 i++;
                         }
                         String ident = s.str_view().copy();
-                        if(ident == "PI" || ident == "pi") {
+                        if(i < expr.len && !expr[i].is_space()) i--;
+                        if(ident == "PI" || ident == "pi" || ident == "Pi") {
                                 ident.free();
                                 Token tok = Token {
                                         .kind = TokenKind.NUMBER,
@@ -104,8 +95,27 @@ fn TokenList lex(String expr) {
                                 };
                                 lst.push(tok);
                                 continue;
+                        } else if(ident == "INF" || ident == "inf" || ident == "Inf") {
+                                ident.free();
+                                Token tok = Token {
+                                        .kind = TokenKind.NUMBER,
+                                        .as = TokenValue {
+                                                .number = -1.0 / 0.0,
+                                        },
+                                };
+                                lst.push(tok);
+                                continue;
+                        } else if(ident == "NAN" || ident == "nan" || ident == "NaN") {
+                                ident.free();
+                                Token tok = Token {
+                                        .kind = TokenKind.NUMBER,
+                                        .as = TokenValue {
+                                                .number = 0.0 / 0.0,
+                                        },
+                                };
+                                lst.push(tok);
+                                continue;
                         }
-                        if(!expr[i].is_space()) i--;
                         Token tok = Token {
                                 .kind = TokenKind.IDENTIFIER,
                                 .as = TokenValue {
@@ -432,26 +442,109 @@ macro Node* nodePow(Allocator alloc, Node* lhs, Node* rhs) => nodeBinop(alloc, N
 macro Node* nodeAssign(Allocator alloc, Node* lhs, Node* rhs) => nodeBinop(alloc, NodeKind.ASSIGN, lhs, rhs);
 
 fn Node* NodeFunction.eval(&func, VarMap *vars, Allocator alloc) {
-        if(func.name == "sqrt") {
-                if(func.params.len() != 1) {
-                        io::printn("[RUNTIME ERROR] => square root function should have only one parameter");
+        switch(func.name) {
+                case "sqrt":
+                        if(func.params.len() != 1) {
+                                io::printn("[RUNTIME ERROR] => square root function should have only one parameter");
+                                return null;
+                        }
+                        Node* val = func.params[0].eval(vars, alloc);
+                        if(val == null || val.kind != NodeKind.NUMBER) return null;
+                        double num = val.as.number;
+                        if(num < 0) {
+                                io::printn("[RUNTIME ERROR] => square root of a negative nuber is not defined");
+                                return null;
+                        }
+                        if(num == 0) {
+                                io::printn("[RUNTIME ERROR] => square root of zero is not defined");
+                                return null;
+                        }
+                        return nodeNumber(alloc, math::sqrt(num));
+                case "sin":
+                        if(func.params.len() != 1) {
+                                io::printn("[RUNTIME ERROR] => sin function should have only one parameter");
+                                return null;
+                        }
+                        Node* val = func.params[0].eval(vars, alloc);
+                        if(val == null || val.kind != NodeKind.NUMBER) return null;
+                        double num = val.as.number;
+                        return nodeNumber(alloc, math::sin(num));
+                case "cos":
+                        if(func.params.len() != 1) {
+                                io::printn("[RUNTIME ERROR] => cos function should have only one parameter");
+                                return null;
+                        }
+                        Node* val = func.params[0].eval(vars, alloc);
+                        if(val == null || val.kind != NodeKind.NUMBER) return null;
+                        double num = val.as.number;
+                        return nodeNumber(alloc, math::cos(num));
+                case "tan":
+                        if(func.params.len() != 1) {
+                                io::printn("[RUNTIME ERROR] => tan function should have only one parameter");
+                                return null;
+                        }
+                        Node* val = func.params[0].eval(vars, alloc);
+                        if(val == null || val.kind != NodeKind.NUMBER) return null;
+                        double num = val.as.number;
+                        return nodeNumber(alloc, math::tan(num));
+                case "asin":
+                        if(func.params.len() != 1) {
+                                io::printn("[RUNTIME ERROR] => asin function should have only one parameter");
+                                return null;
+                        }
+                        Node* val = func.params[0].eval(vars, alloc);
+                        if(val == null || val.kind != NodeKind.NUMBER) return null;
+                        double num = val.as.number;
+                        return nodeNumber(alloc, math::asin(num));
+                case "acos":
+                        if(func.params.len() != 1) {
+                                io::printn("[RUNTIME ERROR] => acos function should have only one parameter");
+                                return null;
+                        }
+                        Node* val = func.params[0].eval(vars, alloc);
+                        if(val == null || val.kind != NodeKind.NUMBER) return null;
+                        double num = val.as.number;
+                        return nodeNumber(alloc, math::acos(num));
+                case "atan":
+                        if(func.params.len() != 1) {
+                                io::printn("[RUNTIME ERROR] => atan function should have only one parameter");
+                                return null;
+                        }
+                        Node* val = func.params[0].eval(vars, alloc);
+                        if(val == null || val.kind != NodeKind.NUMBER) return null;
+                        double num = val.as.number;
+                        return nodeNumber(alloc, math::atan(num));
+                case "printExprs":
+                        if(func.params.len() < 1) {
+                                io::printn("[RUNTIME WARNING] => no expression to print");
+                                return null;
+                        }
+                        foreach(p: func.params) {
+                                p.print();
+                                io::printfn("");
+                                VarMap fakeVars = map::new(<String, double>)();
+                                Node* tmp = p.eval(&fakeVars, alloc);
+                                fakeVars.free();
+                                io::print("\t");
+                                if(tmp == null) {
+                                        io::printfn("resulted in null");
+                                } else if(math::is_nan(tmp.as.number)) {
+                                        io::printn("result: not a number");
+                                } else if(math::is_inf(tmp.as.number)) {
+                                        if(tmp.as.number < 0) {
+                                                io::printn("result: +Inf");
+                                        } else {
+                                                io::printn("result: -Inf");
+                                        }
+                                } else {
+                                        io::printfn("result: %f", tmp.as.number);
+                                }
+                        }
                         return null;
-                }
-                Node* val = func.params[0].eval(vars, alloc);
-                if(val == null || val.kind != NodeKind.NUMBER) return null;
-                double num = val.as.number;
-                if(num < 0) {
-                        io::printn("[RUNTIME ERROR] => square root of a negative nuber is not defined");
+                default:
+                        io::printfn("[RUNTIME WARNING] => unable to find function %s", func.name);
                         return null;
-                }
-                if(num == 0) {
-                        io::printn("[RUNTIME ERROR] => square root of zero is not defined");
-                        return null;
-                }
-                return nodeNumber(alloc, math::sqrt(num));
         }
-        io::printfn("[RUNTIME WARNING] => unable to find function %s", func.name);
-        return null;
 }
 
 fn Node* Node.eval(&tree, VarMap *vars, Allocator alloc) {
@@ -493,6 +586,13 @@ fn Node* Node.eval(&tree, VarMap *vars, Allocator alloc) {
                         if(lhs == null || lhs.kind != NodeKind.NUMBER) return null;
                         Node* rhs = tree.as.binop.rhs.eval(vars, alloc);
                         if(rhs == null || rhs.kind != NodeKind.NUMBER) return null;
+                        if(rhs.as.number == 0) {
+                                if(lhs.as.number == 0) {
+                                        return nodeNumber(alloc, 0.0 / 0.0);
+                                } else {
+                                        return nodeNumber(alloc, -1.0 / 0.0);
+                                }
+                        }
                         return nodeNumber(alloc, lhs.as.number / rhs.as.number);
                 case NodeKind.POW:
                         Node* lhs = tree.as.binop.lhs.eval(vars, alloc);
@@ -618,10 +718,20 @@ fn int execOne(String s, VarMap *vars) {
         io::printn("");
         Node* res = expr.eval(vars, &alloc);
         if(res == null || res.kind != NodeKind.NUMBER) {
-                io::eprintn("error: unexpected");
                 return 1;
         }
-        io::printfn("result: %f", res.as.number);
+        double x = res.as.number;
+        if(math::is_nan(x)) {
+                io::printn("result: not a number");
+        } else if(math::is_inf(x)) {
+                if(x < 0) {
+                        io::printn("result: +Inf");
+                } else {
+                        io::printn("result: -Inf");
+                }
+        } else {
+                io::printfn("result: %f", x);
+        }
         return 0;
 }
 
