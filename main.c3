@@ -14,7 +14,22 @@ fn void usage(String program) {
         io::printn("\tshell       => opens math shell");
 }
 
-def VarMap = Map(<String, double>);
+enum NodeType {
+        NUMBER,
+        VECTOR2,
+}
+
+union VarValue {
+        double number;
+        double[<2>] vec2;
+}
+
+struct Var {
+        NodeType type;
+        VarValue as;
+}
+
+def VarMap = Map(<String, Var>);
 
 def TokenList = List(<Token>);
 
@@ -32,6 +47,8 @@ enum TokenKind {
         PARENTESIS_CLOSE,
         EQUAL,
         COMA,
+        OPEN_BRACKET,
+        CLOSE_BRACKET,
 }
 
 union TokenValue {
@@ -167,6 +184,20 @@ fn TokenList lex(String expr) {
                         lst.push(tok);
                         continue;
                 }
+                if(expr[i] == '{') {
+                        Token tok = Token {
+                                .kind = TokenKind.OPEN_BRACKET,
+                        };
+                        lst.push(tok);
+                        continue;
+                }
+                if(expr[i] == '}') {
+                        Token tok = Token {
+                                .kind = TokenKind.CLOSE_BRACKET,
+                        };
+                        lst.push(tok);
+                        continue;
+                }
                 if(expr[i] == '^') {
                         Token tok = Token {
                                 .kind = TokenKind.POW,
@@ -214,6 +245,7 @@ struct NodeBinop {
 
 union NodeAs {
         double number;
+        Node*[<2>] vec2;
         Node* prio;
         String ident;
         NodeBinop binop;
@@ -223,6 +255,7 @@ union NodeAs {
 enum NodeKind {
         NONE,
         NUMBER,
+        VECTOR2,
         ADD,
         SUB,
         MUL,
@@ -238,6 +271,7 @@ enum NodeKind {
 struct Node {
         NodeKind kind;
         NodeAs as;
+        NodeType type;
 }
 
 fn Node* TokenList.parse(&self, Allocator alloc) {
@@ -326,12 +360,23 @@ fn Node* TokenList.parseLv5Expr(&self, Allocator alloc) {
                 Node* right = self.parseLv5Expr(alloc);
                 return exportNodeBinop(alloc, op, nodeNumber(alloc, 0), right);
         } else if(curr.kind == TokenKind.PARENTESIS_OPEN) {
-                Token op = self.pop_first()!!;
+                self.pop_first()!!;
                 Node* right = self.parseLv1Expr(alloc);
                 curr = self.first()!!;
                 assert(curr.kind == TokenKind.PARENTESIS_CLOSE, "unclosed parenthesis");
                 self.pop_first()!!;
                 return nodePrio(alloc, right);
+        } else if(curr.kind == TokenKind.OPEN_BRACKET) {
+                self.pop_first()!!;
+                Node* first = self.parseLv1Expr(alloc);
+                curr = self.first()!!;
+                assert(curr.kind == TokenKind.COMA, "missing coma");
+                self.pop_first()!!;
+                Node* second = self.parseLv1Expr(alloc);
+                curr = self.first()!!;
+                assert(curr.kind == TokenKind.CLOSE_BRACKET, "unclosed vector2");
+                self.pop_first()!!;
+                return nodeVec2(alloc, first, second);
         } else if(curr.kind == TokenKind.IDENTIFIER) {
                 Token name = self.pop_first()!!;
                 Token! paren = self.first();
@@ -402,6 +447,7 @@ fn Node* nodeNumber(Allocator alloc, double number) {
         Node* ret = alloc.acquire(Node.sizeof, AllocInitType.ZERO)!!;
         ret.as.number = number;
         ret.kind = NodeKind.NUMBER;
+        ret.type = NodeType.NUMBER;
         return ret;
 }
 
@@ -409,6 +455,14 @@ fn Node* nodePrio(Allocator alloc, Node* expr) {
         Node* ret = alloc.acquire(Node.sizeof, AllocInitType.ZERO)!!;
         ret.as.prio = expr;
         ret.kind = NodeKind.PRIO;
+        return ret;
+}
+
+fn Node* nodeVec2(Allocator alloc, Node* x, Node* y) {
+        Node* ret = alloc.acquire(Node.sizeof, AllocInitType.ZERO)!!;
+        ret.as.vec2 = {x, y};
+        ret.kind = NodeKind.VECTOR2;
+        ret.type = NodeType.VECTOR2;
         return ret;
 }
 
@@ -514,6 +568,18 @@ fn Node* NodeFunction.eval(&func, VarMap *vars, Allocator alloc) {
                         if(val == null || val.kind != NodeKind.NUMBER) return null;
                         double num = val.as.number;
                         return nodeNumber(alloc, math::atan(num));
+                case "dot":
+                        if(func.params.len() != 2) {
+                                io::printn("[RUNTIME ERROR] => dot function should have only two parameter");
+                                return null;
+                        }
+                        Node* v1 = func.params[0].eval(vars, alloc);
+                        if(v1 == null || v1.kind != NodeKind.VECTOR2) return null;
+                        double[<2>] v1n = {v1.as.vec2.x.as.number, v1.as.vec2.y.as.number};
+                        Node* v2 = func.params[1].eval(vars, alloc);
+                        if(v2 == null || v2.kind != NodeKind.VECTOR2) return null;
+                        double[<2>] v2n = {v2.as.vec2.x.as.number, v2.as.vec2.y.as.number};
+                        return nodeNumber(alloc, v1n.dot(v2n));
                 case "printExprs":
                         if(func.params.len() < 1) {
                                 io::printn("[RUNTIME WARNING] => no expression to print");
@@ -522,7 +588,7 @@ fn Node* NodeFunction.eval(&func, VarMap *vars, Allocator alloc) {
                         foreach(p: func.params) {
                                 p.print();
                                 io::printfn("");
-                                VarMap fakeVars = map::new(<String, double>)();
+                                VarMap fakeVars;
                                 Node* tmp = p.eval(&fakeVars, alloc);
                                 fakeVars.free();
                                 io::print("\t");
@@ -547,59 +613,142 @@ fn Node* NodeFunction.eval(&func, VarMap *vars, Allocator alloc) {
         }
 }
 
+macro bool checkNodeIsLeaf(Node* rhs) => rhs.kind != NodeKind.NUMBER && rhs.kind != NodeKind.VECTOR2;
+macro Node* nodeVec2N(alloc, x, y) => nodeVec2(alloc, nodeNumber(alloc, x), nodeNumber(alloc, y));
+
 fn Node* Node.eval(&tree, VarMap *vars, Allocator alloc) {
         switch(tree.kind) {
                 case NodeKind.NUMBER:
                         return tree;
+                case NodeKind.VECTOR2:
+                        Node *x = tree.as.vec2.x.eval(vars, alloc);
+                        if(x.kind != NodeKind.NUMBER) return null;
+                        Node *y = tree.as.vec2.y.eval(vars, alloc);
+                        if(x.type != y.type) return null;
+                        return nodeVec2(alloc, x, y);
                 case NodeKind.IDENTIFIER:
                         String name = tree.as.ident;
-                        double! val = (*vars)[name];
+                        Var! val = (*vars)[name];
                         if(catch val) return nodeNumber(alloc, 0);
-                        return nodeNumber(alloc, val);
+                        if(val.type == NodeType.NUMBER) {
+                                return nodeNumber(alloc, val.as.number);
+                        } else if(val.type == NodeType.VECTOR2) {
+                                return nodeVec2N(alloc, val.as.vec2.x, val.as.vec2.y);
+                        }
+                        return null;
                 case NodeKind.ASSIGN:
                         Node* name = tree.as.binop.lhs;
                         if(name.kind != NodeKind.IDENTIFIER) return null;
                         Node* rhs = tree.as.binop.rhs.eval(vars, alloc);
-                        if(rhs == null || rhs.kind != NodeKind.NUMBER) return null;
-                        (*vars)[name.as.ident] = rhs.as.number;
-                        return nodeNumber(alloc, rhs.as.number);
+                        if(rhs == null || checkNodeIsLeaf(rhs)) return null;
+                        Var v;
+                        v.type = rhs.type;
+                        if(v.type == NodeType.NUMBER) v.as.number = rhs.as.number;
+                        if(v.type == NodeType.VECTOR2) v.as.vec2 = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                        (*vars)[name.as.ident] = v;
+                        return rhs;
                 case NodeKind.ADD:
                         Node* lhs = tree.as.binop.lhs.eval(vars, alloc);
-                        if(lhs == null || lhs.kind != NodeKind.NUMBER) return null;
+                        if(lhs == null || checkNodeIsLeaf(lhs)) return null;
                         Node* rhs = tree.as.binop.rhs.eval(vars, alloc);
-                        if(rhs == null || rhs.kind != NodeKind.NUMBER) return null;
-                        return nodeNumber(alloc, lhs.as.number + rhs.as.number);
+                        if(rhs == null || checkNodeIsLeaf(rhs)) return null;
+                        Node* ret;
+                        if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.NUMBER) {
+                                ret = nodeNumber(alloc, lhs.as.number + rhs.as.number);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.NUMBER) {
+                                double[<2>] tmp = {lhs.as.vec2.x.as.number, lhs.as.vec2.y.as.number};
+                                tmp += rhs.as.number;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp += lhs.as.number;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                double[<2>] tmp2 = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp += tmp2;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        }
+                        return ret;
                 case NodeKind.SUB:
                         Node* lhs = tree.as.binop.lhs.eval(vars, alloc);
-                        if(lhs == null || lhs.kind != NodeKind.NUMBER) return null;
+                        if(lhs == null || checkNodeIsLeaf(lhs)) return null;
                         Node* rhs = tree.as.binop.rhs.eval(vars, alloc);
-                        if(rhs == null || rhs.kind != NodeKind.NUMBER) return null;
-                        return nodeNumber(alloc, lhs.as.number - rhs.as.number);
+                        if(rhs == null || checkNodeIsLeaf(rhs)) return null;
+                        Node* ret;
+                        if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.NUMBER) {
+                                ret = nodeNumber(alloc, lhs.as.number - rhs.as.number);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.NUMBER) {
+                                double[<2>] tmp = {lhs.as.vec2.x.as.number, lhs.as.vec2.y.as.number};
+                                tmp -= rhs.as.number;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp.x = lhs.as.number - tmp.x;
+                                tmp.y = lhs.as.number - tmp.y;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                double[<2>] tmp2 = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp -= tmp2;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        }
+                        return ret;
                 case NodeKind.MUL:
                         Node* lhs = tree.as.binop.lhs.eval(vars, alloc);
-                        if(lhs == null || lhs.kind != NodeKind.NUMBER) return null;
+                        if(lhs == null || checkNodeIsLeaf(lhs)) return null;
                         Node* rhs = tree.as.binop.rhs.eval(vars, alloc);
-                        if(rhs == null || rhs.kind != NodeKind.NUMBER) return null;
-                        return nodeNumber(alloc, lhs.as.number * rhs.as.number);
+                        if(rhs == null || checkNodeIsLeaf(rhs)) return null;
+                        Node* ret;
+                        if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.NUMBER) {
+                                ret = nodeNumber(alloc, lhs.as.number * rhs.as.number);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.NUMBER) {
+                                double[<2>] tmp = {lhs.as.vec2.x.as.number, lhs.as.vec2.y.as.number};
+                                tmp *= rhs.as.number;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp *= lhs.as.number;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                double[<2>] tmp2 = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp *= tmp2;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        }
+                        return ret;
                 case NodeKind.DIV:
                         Node* lhs = tree.as.binop.lhs.eval(vars, alloc);
-                        if(lhs == null || lhs.kind != NodeKind.NUMBER) return null;
+                        if(lhs == null || checkNodeIsLeaf(lhs)) return null;
                         Node* rhs = tree.as.binop.rhs.eval(vars, alloc);
-                        if(rhs == null || rhs.kind != NodeKind.NUMBER) return null;
-                        if(rhs.as.number == 0) {
-                                if(lhs.as.number == 0) {
-                                        return nodeNumber(alloc, 0.0 / 0.0);
-                                } else {
-                                        return nodeNumber(alloc, -1.0 / 0.0);
-                                }
+                        if(rhs == null || checkNodeIsLeaf(rhs)) return null;
+                        Node* ret;
+                        if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.NUMBER) {
+                                ret = nodeNumber(alloc, lhs.as.number / rhs.as.number);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.NUMBER) {
+                                double[<2>] tmp = {lhs.as.vec2.x.as.number, lhs.as.vec2.y.as.number};
+                                tmp /= rhs.as.number;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.NUMBER && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp.x = lhs.as.number / tmp.x;
+                                tmp.y = lhs.as.number / tmp.y;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
+                        } else if(lhs.type == NodeType.VECTOR2 && rhs.type == NodeType.VECTOR2) {
+                                double[<2>] tmp = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                double[<2>] tmp2 = {rhs.as.vec2.x.as.number, rhs.as.vec2.y.as.number};
+                                tmp /= tmp2;
+                                ret = nodeVec2N(alloc, tmp.x, tmp.y);
                         }
-                        return nodeNumber(alloc, lhs.as.number / rhs.as.number);
+                        return ret;
                 case NodeKind.POW:
                         Node* lhs = tree.as.binop.lhs.eval(vars, alloc);
-                        if(lhs == null || lhs.kind != NodeKind.NUMBER) return null;
+                        if(lhs == null || checkNodeIsLeaf(lhs)) return null;
                         Node* rhs = tree.as.binop.rhs.eval(vars, alloc);
-                        if(rhs == null || rhs.kind != NodeKind.NUMBER) return null;
-                        return nodeNumber(alloc, math::pow(lhs.as.number, rhs.as.number));
+                        if(rhs == null || rhs.kind == NodeKind.NUMBER) return null;
+                        if(lhs.kind == NodeKind.NUMBER) return nodeNumber(alloc, math::pow(lhs.as.number, rhs.as.number));
+                        if(lhs.kind == NodeKind.VECTOR2) return nodeVec2N(alloc, math::pow(lhs.as.vec2.x.as.number, rhs.as.number), math::pow(lhs.as.vec2.x.as.number, rhs.as.number));
+                        return null;
                 case NodeKind.FACTORIAL:
                         Node* val = tree.as.prio.eval(vars, alloc);
                         if(val == null || val.kind != NodeKind.NUMBER) return null;
@@ -640,6 +789,10 @@ fn void Token.print(&t) {
                         io::printn("EQUAL");
                 case TokenKind.COMA:
                         io::printn("COMA");
+                case TokenKind.OPEN_BRACKET:
+                        io::printn("OPEN_BRACKET");
+                case TokenKind.CLOSE_BRACKET:
+                        io::printn("CLOSE_BRACKET");
                 default:
                         unreachable("Token.print");
         }
@@ -681,6 +834,12 @@ fn void Node.print(&self) {
                         io::print(", ");
                         self.as.binop.rhs.print();
                         io::print(")");
+                case NodeKind.VECTOR2:
+                        io::print("{");
+                        self.as.vec2.x.print();
+                        io::print(", ");
+                        self.as.vec2.y.print();
+                        io::print("}");
                 case NodeKind.FACTORIAL:
                         io::print("factorial(");
                         self.as.binop.lhs.print();
@@ -713,25 +872,18 @@ fn int execOne(String s, VarMap *vars) {
         //foreach(t : toks) {
         //        t.print();
         //}
+        if(toks.size == 0) return 0;
         Node* expr = toks.parse(&alloc);
         //expr.print();
         io::printn("");
         Node* res = expr.eval(vars, &alloc);
-        if(res == null || res.kind != NodeKind.NUMBER) {
+        if(res == null || checkNodeIsLeaf(res)) {
+                io::printn("result: null");
                 return 1;
         }
-        double x = res.as.number;
-        if(math::is_nan(x)) {
-                io::printn("result: not a number");
-        } else if(math::is_inf(x)) {
-                if(x < 0) {
-                        io::printn("result: +Inf");
-                } else {
-                        io::printn("result: -Inf");
-                }
-        } else {
-                io::printfn("result: %f", x);
-        }
+        io::print("result: ");
+        res.print();
+        io::printn("");
         return 0;
 }
 
@@ -741,7 +893,7 @@ fn int main(String[] args) {
                 usage(program);
                 return 1;
         }
-        VarMap vars = map::new(<String, double>)();
+        VarMap vars;
         if(args[1] == "exec") {
                 if(args.len <= 2) {
                         usage(program);
@@ -756,7 +908,12 @@ fn int main(String[] args) {
                 while(true) {
                         io::print("=>> ");
                         str = io::readline()!!;
-                        if(str == "quit") break;
+                        if(str == "quit" || str == "exit") break;
+                        if(str == "clear") {
+                                io::printn("\ec");
+                                mem::free(str);
+                                continue;
+                        }
                         execOne(str, &vars);
                         mem::free(str);
                 }
